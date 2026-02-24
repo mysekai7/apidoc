@@ -1,0 +1,11 @@
+# Binary
+apidoc
+
+# Output
+output/
+
+# Test artifacts
+internal/generator/output/
+
+# OS
+.DS_Store
