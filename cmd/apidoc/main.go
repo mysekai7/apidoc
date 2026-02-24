@@ -1,15 +1,22 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
+	"text/tabwriter"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/yourorg/apidoc/internal/config"
+	"github.com/yourorg/apidoc/internal/generator"
+	"github.com/yourorg/apidoc/internal/har"
 	"github.com/yourorg/apidoc/internal/store"
+	"github.com/yourorg/apidoc/pkg/types"
 )
 
 const defaultConfigContent = `llm:
@@ -89,24 +96,39 @@ func newRootCmd() *cobra.Command {
 
 	root := &cobra.Command{
 		Use:   "apidoc",
-		Short: "API Doc Assistant CLI",
+		Short: "API Doc Assistant — generate API docs from real traffic",
 	}
 
 	root.PersistentFlags().StringVar(&cfgPath, "config", "", "config file path")
-	root.PersistentFlags().BoolVar(&verbose, "verbose", false, "enable verbose output")
-	root.PersistentFlags().BoolVar(&debug, "debug", false, "enable debug output")
-	_ = verbose
-	_ = debug
+	root.PersistentFlags().BoolVar(&verbose, "verbose", false, "verbose output")
+	root.PersistentFlags().BoolVar(&debug, "debug", false, "debug output")
 
 	root.AddCommand(newInitCmd())
-	root.AddCommand(newGenerateCmd(&cfgPath))
-	root.AddCommand(newImportCmd())
-	root.AddCommand(newServeCmd())
-	root.AddCommand(newListCmd())
-	root.AddCommand(newShowCmd())
-	root.AddCommand(newDeleteCmd())
+	root.AddCommand(newGenerateCmd(&cfgPath, &verbose))
+	root.AddCommand(newImportCmd(&cfgPath))
+	root.AddCommand(newServeCmd(&cfgPath))
+	root.AddCommand(newListCmd(&cfgPath))
+	root.AddCommand(newShowCmd(&cfgPath))
+	root.AddCommand(newDeleteCmd(&cfgPath))
 
 	return root
+}
+
+func openStore(cfgPath string) (*config.Config, *store.SQLiteStore, error) {
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		return nil, nil, err
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, nil, err
+	}
+	dbPath := filepath.Join(home, ".apidoc", "apidoc.db")
+	s, err := store.NewSQLiteStore(dbPath)
+	if err != nil {
+		return nil, nil, err
+	}
+	return cfg, s, nil
 }
 
 func newInitCmd() *cobra.Command {
@@ -122,7 +144,6 @@ func newInitCmd() *cobra.Command {
 			if err := os.MkdirAll(baseDir, 0o755); err != nil {
 				return err
 			}
-
 			cfgFile := filepath.Join(baseDir, "config.yaml")
 			if _, err := os.Stat(cfgFile); errors.Is(err, os.ErrNotExist) {
 				if err := os.WriteFile(cfgFile, []byte(defaultConfigContent), 0o644); err != nil {
@@ -134,7 +155,6 @@ func newInitCmd() *cobra.Command {
 			} else {
 				return err
 			}
-
 			dbPath := filepath.Join(baseDir, "apidoc.db")
 			s, err := store.NewSQLiteStore(dbPath)
 			if err != nil {
@@ -142,85 +162,403 @@ func newInitCmd() *cobra.Command {
 			}
 			defer s.Close()
 			fmt.Fprintln(cmd.OutOrStdout(), "database ready", dbPath)
-			fmt.Fprintln(cmd.OutOrStdout(), "please update llm.api_key in", cfgFile)
+			fmt.Fprintln(cmd.OutOrStdout(), "please set llm.api_key in", cfgFile)
 			return nil
 		},
 	}
 }
 
-func newGenerateCmd(cfgPath *string) *cobra.Command {
+func newGenerateCmd(cfgPath *string, verbose *bool) *cobra.Command {
 	var harPath, scenario string
 	var noCache, resume bool
-	cmd := &cobra.Command{Use: "generate", Short: "Generate docs from HAR", RunE: func(cmd *cobra.Command, args []string) error {
-		cfg, err := config.Load(*cfgPath)
-		if err != nil {
-			return err
-		}
-		_ = harPath
-		_ = scenario
-		_ = noCache
-		_ = resume
-		return cfg.ValidateGenerate()
-	}}
-	cmd.Flags().StringVar(&harPath, "har", "", "HAR file path")
-	cmd.Flags().StringVar(&scenario, "scenario", "", "scenario description")
-	cmd.Flags().BoolVar(&noCache, "no-cache", false, "disable cache")
+
+	cmd := &cobra.Command{
+		Use:   "generate",
+		Short: "Generate API docs from HAR file",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, s, err := openStore(*cfgPath)
+			if err != nil {
+				return err
+			}
+			defer s.Close()
+
+			if err := cfg.ValidateGenerate(); err != nil {
+				return err
+			}
+
+			// Parse HAR
+			fmt.Fprintf(cmd.OutOrStdout(), "parsing %s...\n", harPath)
+			logs, err := har.Parse(harPath)
+			if err != nil {
+				return fmt.Errorf("parse HAR: %w", err)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "found %d requests\n", len(logs))
+
+			// Determine host from first log
+			host := "unknown"
+			if len(logs) > 0 && logs[0].Host != "" {
+				host = logs[0].Host
+			}
+
+			// Create session and save logs
+			sess, err := s.CreateSession("har", scenario, host)
+			if err != nil {
+				return err
+			}
+			if err := s.SaveLogs(sess.ID, logs); err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "session %s created (%d logs)\n", sess.ID, len(logs))
+
+			// Generate
+			progress := func(stage string) {
+				if *verbose {
+					fmt.Fprintf(cmd.OutOrStdout(), "  [%s]\n", stage)
+				}
+			}
+
+			doc, err := generator.Generate(sess, logs, cfg.LLM, s, progress, noCache, resume)
+			if err != nil {
+				return fmt.Errorf("generate: %w", err)
+			}
+
+			fmt.Fprintf(cmd.OutOrStdout(), "generated %d endpoints, output → %s\n", len(doc.Endpoints), cfg.Output.Dir)
+			return nil
+		},
+	}
+
+	cmd.Flags().StringVar(&harPath, "har", "", "HAR file path (required)")
+	cmd.Flags().StringVar(&scenario, "scenario", "", "scenario description (required)")
+	cmd.Flags().BoolVar(&noCache, "no-cache", false, "discard cache, regenerate all")
 	cmd.Flags().BoolVar(&resume, "resume", false, "resume from failed batches")
 	_ = cmd.MarkFlagRequired("har")
+	_ = cmd.MarkFlagRequired("scenario")
 	return cmd
 }
 
-func newImportCmd() *cobra.Command {
+func newImportCmd(cfgPath *string) *cobra.Command {
 	var harPath, scenario string
-	cmd := &cobra.Command{Use: "import", Short: "Import HAR into database", RunE: func(cmd *cobra.Command, args []string) error {
-		_ = harPath
-		_ = scenario
-		return nil
-	}}
+
+	cmd := &cobra.Command{
+		Use:   "import",
+		Short: "Import HAR file into database (without generating)",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			_, s, err := openStore(*cfgPath)
+			if err != nil {
+				return err
+			}
+			defer s.Close()
+
+			logs, err := har.Parse(harPath)
+			if err != nil {
+				return fmt.Errorf("parse HAR: %w", err)
+			}
+
+			host := "unknown"
+			if len(logs) > 0 && logs[0].Host != "" {
+				host = logs[0].Host
+			}
+
+			sess, err := s.CreateSession("har", scenario, host)
+			if err != nil {
+				return err
+			}
+			if err := s.SaveLogs(sess.ID, logs); err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "imported %d logs → session %s\n", len(logs), sess.ID)
+			return nil
+		},
+	}
+
 	cmd.Flags().StringVar(&harPath, "har", "", "HAR file path")
 	cmd.Flags().StringVar(&scenario, "scenario", "", "scenario description")
 	_ = cmd.MarkFlagRequired("har")
 	return cmd
 }
 
-func newServeCmd() *cobra.Command {
+func newServeCmd(cfgPath *string) *cobra.Command {
 	var host string
 	var port int
-	cmd := &cobra.Command{Use: "serve", Short: "Start HTTP service", RunE: func(cmd *cobra.Command, args []string) error {
-		_ = host
-		_ = port
-		return nil
-	}}
-	cmd.Flags().StringVar(&host, "host", "127.0.0.1", "server host")
-	cmd.Flags().IntVar(&port, "port", 3000, "server port")
+
+	cmd := &cobra.Command{
+		Use:   "serve",
+		Short: "Start preview & extension API server",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, s, err := openStore(*cfgPath)
+			if err != nil {
+				return err
+			}
+			defer s.Close()
+
+			if host != "" {
+				cfg.Server.Host = host
+			}
+			if port != 0 {
+				cfg.Server.Port = port
+			}
+
+			mux := http.NewServeMux()
+
+			// Static file server for output docs
+			outputDir := cfg.Output.Dir
+			mux.Handle("/docs/", http.StripPrefix("/docs/", http.FileServer(http.Dir(outputDir))))
+
+			// API: list sessions
+			mux.HandleFunc("/api/sessions", func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet {
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+				sessions, err := s.ListSessions()
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(sessions)
+			})
+
+			// API: receive traffic from extension
+			mux.HandleFunc("/api/traffic", func(w http.ResponseWriter, r *http.Request) {
+				setCORS(w, cfg.Server.CORSExtensionID)
+				if r.Method == http.MethodOptions {
+					w.WriteHeader(http.StatusNoContent)
+					return
+				}
+				if r.Method != http.MethodPost {
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+				var req struct {
+					Scenario string `json:"scenario"`
+					Logs     []struct {
+						Method              string              `json:"method"`
+						URL                 string              `json:"url"`
+						Host                string              `json:"host"`
+						Path                string              `json:"path"`
+						QueryParams         map[string][]string `json:"query_params"`
+						RequestHeaders      map[string]string   `json:"request_headers"`
+						RequestBody         string              `json:"request_body"`
+						ContentType         string              `json:"content_type"`
+						StatusCode          int                 `json:"status_code"`
+						ResponseHeaders     map[string]string   `json:"response_headers"`
+						ResponseBody        string              `json:"response_body"`
+						ResponseContentType string              `json:"response_content_type"`
+						LatencyMs           int64               `json:"latency_ms"`
+					} `json:"logs"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+					http.Error(w, "invalid json: "+err.Error(), http.StatusBadRequest)
+					return
+				}
+
+				// Convert to TrafficLog
+				var logs []types.TrafficLog
+				for i, l := range req.Logs {
+					logs = append(logs, types.TrafficLog{
+						Seq:                 i + 1,
+						Method:              l.Method,
+						Host:                l.Host,
+						Path:                l.Path,
+						QueryParams:         l.QueryParams,
+						RequestHeaders:      l.RequestHeaders,
+						RequestBody:         l.RequestBody,
+						ContentType:         l.ContentType,
+						StatusCode:          l.StatusCode,
+						ResponseHeaders:     l.ResponseHeaders,
+						ResponseBody:        l.ResponseBody,
+						ResponseContentType: l.ResponseContentType,
+						LatencyMs:           l.LatencyMs,
+						Timestamp:           time.Now(),
+					})
+				}
+
+				host := "unknown"
+				if len(req.Logs) > 0 && req.Logs[0].Host != "" {
+					host = req.Logs[0].Host
+				}
+				sess, err := s.CreateSession("extension", req.Scenario, host)
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+				if err := s.SaveLogs(sess.ID, logs); err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]string{"session_id": sess.ID, "status": "imported"})
+			})
+
+			// API: generate docs for session
+			mux.HandleFunc("/api/generate", func(w http.ResponseWriter, r *http.Request) {
+				setCORS(w, cfg.Server.CORSExtensionID)
+				if r.Method == http.MethodOptions {
+					w.WriteHeader(http.StatusNoContent)
+					return
+				}
+				if r.Method != http.MethodPost {
+					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+					return
+				}
+				var req struct {
+					SessionID string `json:"session_id"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+					http.Error(w, "invalid json", http.StatusBadRequest)
+					return
+				}
+				sess, err := s.GetSession(req.SessionID)
+				if err != nil {
+					http.Error(w, "session not found", http.StatusNotFound)
+					return
+				}
+				logs, err := s.GetLogs(sess.ID)
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+				doc, err := generator.Generate(sess, logs, cfg.LLM, s, nil, false, false)
+				if err != nil {
+					http.Error(w, "generate failed: "+err.Error(), http.StatusInternalServerError)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(doc)
+			})
+
+			addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
+			fmt.Fprintf(cmd.OutOrStdout(), "serving on http://%s\n", addr)
+			fmt.Fprintf(cmd.OutOrStdout(), "  docs:    http://%s/docs/\n", addr)
+			fmt.Fprintf(cmd.OutOrStdout(), "  api:     http://%s/api/sessions\n", addr)
+			return http.ListenAndServe(addr, mux)
+		},
+	}
+
+	cmd.Flags().StringVar(&host, "host", "", "override server host")
+	cmd.Flags().IntVar(&port, "port", 0, "override server port")
 	return cmd
 }
 
-func newListCmd() *cobra.Command {
-	return &cobra.Command{Use: "list", Short: "List all sessions", RunE: func(cmd *cobra.Command, args []string) error { return nil }}
+func newListCmd(cfgPath *string) *cobra.Command {
+	return &cobra.Command{
+		Use:   "list",
+		Short: "List all sessions",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			_, s, err := openStore(*cfgPath)
+			if err != nil {
+				return err
+			}
+			defer s.Close()
+
+			sessions, err := s.ListSessions()
+			if err != nil {
+				return err
+			}
+			if len(sessions) == 0 {
+				fmt.Fprintln(cmd.OutOrStdout(), "no sessions found")
+				return nil
+			}
+
+			w := tabwriter.NewWriter(cmd.OutOrStdout(), 0, 0, 2, ' ', 0)
+			fmt.Fprintln(w, "ID\tSOURCE\tSCENARIO\tHOST\tLOGS\tSTATUS\tCREATED")
+			for _, sess := range sessions {
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%s\t%s\n",
+					sess.ID, sess.Source, truncate(sess.Scenario, 30), sess.Host,
+					sess.LogCount, sess.Status, sess.CreatedAt.Format("2006-01-02 15:04"))
+			}
+			return w.Flush()
+		},
+	}
 }
 
-func newShowCmd() *cobra.Command {
+func newShowCmd(cfgPath *string) *cobra.Command {
 	var session string
-	var version int
-	cmd := &cobra.Command{Use: "show", Short: "Show session details", RunE: func(cmd *cobra.Command, args []string) error {
-		_ = session
-		_ = version
-		return nil
-	}}
+
+	cmd := &cobra.Command{
+		Use:   "show",
+		Short: "Show session details",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			_, s, err := openStore(*cfgPath)
+			if err != nil {
+				return err
+			}
+			defer s.Close()
+
+			sess, err := s.GetSession(session)
+			if err != nil {
+				return fmt.Errorf("session not found: %w", err)
+			}
+
+			fmt.Fprintf(cmd.OutOrStdout(), "ID:       %s\n", sess.ID)
+			fmt.Fprintf(cmd.OutOrStdout(), "Source:   %s\n", sess.Source)
+			fmt.Fprintf(cmd.OutOrStdout(), "Scenario: %s\n", sess.Scenario)
+			fmt.Fprintf(cmd.OutOrStdout(), "Host:     %s\n", sess.Host)
+			fmt.Fprintf(cmd.OutOrStdout(), "Logs:     %d\n", sess.LogCount)
+			fmt.Fprintf(cmd.OutOrStdout(), "Status:   %s\n", sess.Status)
+			fmt.Fprintf(cmd.OutOrStdout(), "Created:  %s\n", sess.CreatedAt.Format("2006-01-02 15:04:05"))
+
+			logs, err := s.GetLogs(sess.ID)
+			if err != nil {
+				return err
+			}
+			if len(logs) > 0 {
+				fmt.Fprintln(cmd.OutOrStdout(), "\nTraffic:")
+				for _, l := range logs {
+					fmt.Fprintf(cmd.OutOrStdout(), "  %d. %s %s → %d (%dms)\n",
+						l.Seq, l.Method, l.Path, l.StatusCode, l.LatencyMs)
+				}
+			}
+			return nil
+		},
+	}
+
 	cmd.Flags().StringVar(&session, "session", "", "session id")
-	cmd.Flags().IntVar(&version, "version", 0, "version number")
 	_ = cmd.MarkFlagRequired("session")
 	return cmd
 }
 
-func newDeleteCmd() *cobra.Command {
+func newDeleteCmd(cfgPath *string) *cobra.Command {
 	var session string
-	cmd := &cobra.Command{Use: "delete", Short: "Delete session", RunE: func(cmd *cobra.Command, args []string) error {
-		_ = session
-		return nil
-	}}
+
+	cmd := &cobra.Command{
+		Use:   "delete",
+		Short: "Delete a session and its data",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			_, s, err := openStore(*cfgPath)
+			if err != nil {
+				return err
+			}
+			defer s.Close()
+
+			if err := s.DeleteSession(session); err != nil {
+				return err
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "deleted session %s\n", session)
+			return nil
+		},
+	}
+
 	cmd.Flags().StringVar(&session, "session", "", "session id")
 	_ = cmd.MarkFlagRequired("session")
 	return cmd
+}
+
+func setCORS(w http.ResponseWriter, extensionID string) {
+	origin := "*"
+	if extensionID != "" {
+		origin = "chrome-extension://" + extensionID
+	}
+	w.Header().Set("Access-Control-Allow-Origin", origin)
+	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+}
+
+func truncate(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[:max-3] + "..."
 }
