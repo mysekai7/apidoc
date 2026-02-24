@@ -1,0 +1,733 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>apidoc 预览</title>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --bg-soft: #111827;
+      --panel: #0b1221;
+      --panel-2: #111827;
+      --text: #e2e8f0;
+      --muted: #94a3b8;
+      --accent: #38bdf8;
+      --accent-2: #22c55e;
+      --warn: #f97316;
+      --error: #ef4444;
+      --border: rgba(148, 163, 184, 0.2);
+      --shadow: 0 20px 60px rgba(15, 23, 42, 0.4);
+      --radius: 16px;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      --sans: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", "Noto Sans SC", "Source Han Sans SC", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: var(--sans);
+      color: var(--text);
+      min-height: 100vh;
+      background: radial-gradient(1200px 600px at 10% -20%, rgba(56, 189, 248, 0.2), transparent 60%),
+                  radial-gradient(800px 500px at 90% 10%, rgba(34, 197, 94, 0.2), transparent 60%),
+                  linear-gradient(180deg, #0b1020 0%, #0f172a 40%, #0b1020 100%);
+    }
+
+    .app {
+      display: grid;
+      grid-template-columns: 320px 1fr;
+      gap: 24px;
+      padding: 32px;
+    }
+
+    .sidebar {
+      background: linear-gradient(160deg, rgba(15, 23, 42, 0.9), rgba(2, 6, 23, 0.9));
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 24px;
+      box-shadow: var(--shadow);
+      position: sticky;
+      top: 24px;
+      height: calc(100vh - 64px);
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .brand {
+      font-weight: 700;
+      font-size: 20px;
+      letter-spacing: 0.5px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .brand span {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 36px;
+      height: 36px;
+      border-radius: 12px;
+      background: linear-gradient(135deg, rgba(56, 189, 248, 0.8), rgba(34, 197, 94, 0.8));
+      color: #0b1020;
+      font-weight: 800;
+    }
+
+    .sidebar h2 {
+      margin: 0;
+      font-size: 14px;
+      color: var(--muted);
+      letter-spacing: 0.2em;
+      text-transform: uppercase;
+    }
+
+    .search {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: rgba(15, 23, 42, 0.6);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 8px 12px;
+    }
+
+    .search input {
+      background: transparent;
+      border: none;
+      outline: none;
+      color: var(--text);
+      width: 100%;
+      font-size: 14px;
+    }
+
+    .session-list {
+      overflow-y: auto;
+      padding-right: 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .session-item {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      padding: 12px;
+      border-radius: 12px;
+      border: 1px solid transparent;
+      background: rgba(15, 23, 42, 0.5);
+      transition: all 0.2s ease;
+      text-decoration: none;
+      color: inherit;
+    }
+
+    .session-item:hover {
+      border-color: rgba(56, 189, 248, 0.4);
+      transform: translateY(-1px);
+    }
+
+    .session-item.active {
+      border-color: rgba(34, 197, 94, 0.6);
+      background: rgba(15, 23, 42, 0.9);
+    }
+
+    .session-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .session-title {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text);
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      background: rgba(148, 163, 184, 0.2);
+      color: var(--muted);
+      border: 1px solid rgba(148, 163, 184, 0.2);
+    }
+
+    .badge.status-imported { color: #38bdf8; border-color: rgba(56, 189, 248, 0.5); background: rgba(56, 189, 248, 0.1); }
+    .badge.status-generating { color: #f97316; border-color: rgba(249, 115, 22, 0.5); background: rgba(249, 115, 22, 0.1); }
+    .badge.status-generated { color: #22c55e; border-color: rgba(34, 197, 94, 0.5); background: rgba(34, 197, 94, 0.1); }
+    .badge.status-partial_generated { color: #facc15; border-color: rgba(250, 204, 21, 0.5); background: rgba(250, 204, 21, 0.1); }
+    .badge.status-failed { color: #ef4444; border-color: rgba(239, 68, 68, 0.5); background: rgba(239, 68, 68, 0.1); }
+
+    .main {
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+
+    .panel {
+      background: rgba(15, 23, 42, 0.8);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 24px;
+      box-shadow: var(--shadow);
+    }
+
+    .panel h1 {
+      margin: 0 0 12px 0;
+      font-size: 24px;
+    }
+
+    .panel h3 {
+      margin: 0 0 10px 0;
+      font-size: 16px;
+    }
+
+    .meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px 16px;
+      font-size: 13px;
+      color: var(--muted);
+    }
+
+    .meta span {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .actions {
+      margin-left: auto;
+      display: flex;
+      gap: 10px;
+    }
+
+    .btn {
+      border: 1px solid rgba(56, 189, 248, 0.4);
+      background: rgba(56, 189, 248, 0.15);
+      color: #e0f2fe;
+      padding: 8px 14px;
+      border-radius: 999px;
+      font-size: 13px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+
+    .btn:hover {
+      background: rgba(56, 189, 248, 0.3);
+      transform: translateY(-1px);
+    }
+
+    .btn.secondary {
+      border-color: rgba(148, 163, 184, 0.4);
+      background: rgba(148, 163, 184, 0.1);
+      color: var(--text);
+    }
+
+    .content-empty {
+      text-align: center;
+      padding: 80px 20px;
+      color: var(--muted);
+    }
+
+    .endpoint-group {
+      margin-top: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .endpoint-group h4 {
+      margin: 0;
+      font-size: 14px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+
+    .endpoint {
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 16px;
+      background: rgba(2, 6, 23, 0.6);
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .endpoint-header {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+
+    .endpoint-path {
+      font-family: var(--mono);
+      font-size: 14px;
+    }
+
+    .method {
+      padding: 3px 8px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+    }
+
+    .method-get { background: rgba(34, 197, 94, 0.15); color: #86efac; border: 1px solid rgba(34, 197, 94, 0.5); }
+    .method-post { background: rgba(249, 115, 22, 0.15); color: #fdba74; border: 1px solid rgba(249, 115, 22, 0.5); }
+    .method-put { background: rgba(59, 130, 246, 0.15); color: #93c5fd; border: 1px solid rgba(59, 130, 246, 0.5); }
+    .method-delete { background: rgba(239, 68, 68, 0.15); color: #fca5a5; border: 1px solid rgba(239, 68, 68, 0.5); }
+    .method-patch { background: rgba(168, 85, 247, 0.15); color: #d8b4fe; border: 1px solid rgba(168, 85, 247, 0.5); }
+    .method-default { background: rgba(148, 163, 184, 0.15); color: #cbd5f5; border: 1px solid rgba(148, 163, 184, 0.5); }
+
+    .endpoint-desc {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.6;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+    }
+
+    th, td {
+      border-bottom: 1px solid var(--border);
+      padding: 8px 6px;
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th { color: var(--muted); font-weight: 600; }
+
+    .code {
+      background: rgba(15, 23, 42, 0.8);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 12px;
+      font-family: var(--mono);
+      font-size: 12px;
+      overflow-x: auto;
+      line-height: 1.6;
+      color: #e2e8f0;
+    }
+
+    .code .key { color: #38bdf8; }
+    .code .string { color: #86efac; }
+    .code .number { color: #facc15; }
+    .code .boolean { color: #f472b6; }
+    .code .null { color: #f97316; }
+
+    .logs {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 12px;
+      margin-top: 8px;
+    }
+
+    .log-card {
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 12px;
+      background: rgba(2, 6, 23, 0.6);
+    }
+
+    .log-card .log-path {
+      font-family: var(--mono);
+      font-size: 12px;
+    }
+
+    .status {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .note {
+      font-size: 13px;
+      color: var(--muted);
+    }
+
+    @media (max-width: 980px) {
+      .app { grid-template-columns: 1fr; }
+      .sidebar { position: static; height: auto; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <div class="brand"><span>A</span> apidoc 预览</div>
+      <h2>会话列表</h2>
+      <div class="search">
+        <input id="searchInput" type="search" placeholder="搜索场景 / Host" />
+      </div>
+      <div id="sessionList" class="session-list"></div>
+    </aside>
+
+    <main class="main">
+      <section class="panel" id="overviewPanel">
+        <div style="display:flex;align-items:center;gap:16px;">
+          <div>
+            <h1>接口文档</h1>
+            <div class="note">从真实流量自动生成的 API 文档预览。</div>
+          </div>
+          <div class="actions">
+            <button class="btn secondary" id="refreshBtn">刷新列表</button>
+          </div>
+        </div>
+        <div id="overviewContent" class="content-empty">请选择一个会话开始查看。</div>
+      </section>
+
+      <section class="panel" id="detailPanel" style="display:none;"></section>
+    </main>
+  </div>
+
+  <script>
+    const initialSession = "{{.SessionID}}";
+    const sessionListEl = document.getElementById('sessionList');
+    const overviewPanel = document.getElementById('overviewPanel');
+    const overviewContent = document.getElementById('overviewContent');
+    const detailPanel = document.getElementById('detailPanel');
+    const searchInput = document.getElementById('searchInput');
+    const refreshBtn = document.getElementById('refreshBtn');
+
+    let sessionsCache = [];
+
+    const methodClass = (method) => {
+      switch ((method || '').toUpperCase()) {
+        case 'GET': return 'method-get';
+        case 'POST': return 'method-post';
+        case 'PUT': return 'method-put';
+        case 'DELETE': return 'method-delete';
+        case 'PATCH': return 'method-patch';
+        default: return 'method-default';
+      }
+    };
+
+    const statusClass = (status) => `status-${(status || '').toLowerCase()}`;
+
+    const pathPrefix = (path) => {
+      const trimmed = (path || '').replace(/^\/+|\/+$/g, '');
+      if (!trimmed) return '/';
+      const parts = trimmed.split('/').filter(Boolean);
+      return '/' + parts.slice(0, 3).join('/');
+    };
+
+    const htmlEscape = (str) => String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+
+    const highlightJSON = (input) => {
+      if (!input) return '';
+      let text = String(input);
+      try {
+        text = JSON.stringify(JSON.parse(text), null, 2);
+      } catch (err) {
+        return htmlEscape(text);
+      }
+      const escaped = htmlEscape(text);
+      return escaped.replace(/("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"\s*:?)|\b(true|false|null)\b|-?\d+(?:\.\d+)?(?:[eE][+\-]?\d+)?/g, (match) => {
+        let cls = 'number';
+        if (/^"/.test(match)) {
+          cls = /:$/.test(match) ? 'key' : 'string';
+        } else if (/true|false/.test(match)) {
+          cls = 'boolean';
+        } else if (/null/.test(match)) {
+          cls = 'null';
+        }
+        return `<span class="${cls}">${match}</span>`;
+      });
+    };
+
+    const renderTable = (params) => {
+      if (!params || params.length === 0) {
+        return '<div class="note">无</div>';
+      }
+      const rows = [];
+      const walk = (items, depth) => {
+        items.forEach((item) => {
+          const indent = '&nbsp;'.repeat(depth * 4);
+          rows.push(`
+            <tr>
+              <td>${indent}${htmlEscape(item.name || '')}</td>
+              <td>${htmlEscape(item.type || '')}</td>
+              <td>${item.required ? '是' : '否'}</td>
+              <td>${htmlEscape(item.description || '')}</td>
+            </tr>
+          `);
+          if (item.children && item.children.length) {
+            walk(item.children, depth + 1);
+          }
+        });
+      };
+      walk(params, 0);
+      return `
+        <table>
+          <thead>
+            <tr><th>参数</th><th>类型</th><th>必填</th><th>说明</th></tr>
+          </thead>
+          <tbody>${rows.join('')}</tbody>
+        </table>
+      `;
+    };
+
+    const renderResponses = (responses) => {
+      if (!responses || responses.length === 0) {
+        return '<div class="note">无</div>';
+      }
+      return responses.map((resp) => {
+        return `
+          <div class="endpoint" style="margin-top:10px;">
+            <div class="endpoint-header">
+              <span class="badge">${resp.status_code}</span>
+              <span class="note">${htmlEscape(resp.content_type || '')}</span>
+              <span class="note">${htmlEscape(resp.description || '')}</span>
+            </div>
+            ${renderTable(resp.fields || [])}
+          </div>
+        `;
+      }).join('');
+    };
+
+    const renderEndpoints = (doc) => {
+      if (!doc || !doc.endpoints || doc.endpoints.length === 0) {
+        return '<div class="note">暂无接口定义。</div>';
+      }
+      const groups = {};
+      doc.endpoints.forEach((ep) => {
+        const prefix = pathPrefix(ep.path);
+        if (!groups[prefix]) groups[prefix] = [];
+        groups[prefix].push(ep);
+      });
+      const prefixes = Object.keys(groups).sort();
+      return prefixes.map((prefix) => {
+        const endpoints = groups[prefix].sort((a, b) => (a.path || '').localeCompare(b.path || ''));
+        const items = endpoints.map((ep) => {
+          return `
+            <div class="endpoint">
+              <div class="endpoint-header">
+                <span class="method ${methodClass(ep.method)}">${htmlEscape(ep.method || '')}</span>
+                <span class="endpoint-path">${htmlEscape(ep.path || '')}</span>
+                <span class="note">${htmlEscape(ep.summary || '')}</span>
+              </div>
+              <div class="endpoint-desc">${htmlEscape(ep.description || '')}</div>
+              <div>
+                <h3>路径参数</h3>
+                ${renderTable(ep.path_params || [])}
+              </div>
+              <div>
+                <h3>查询参数</h3>
+                ${renderTable(ep.query_params || [])}
+              </div>
+              <div>
+                <h3>请求体</h3>
+                <div class="note">${htmlEscape(ep.request_body && ep.request_body.content_type ? ep.request_body.content_type : '')}</div>
+                ${renderTable(ep.request_body && ep.request_body.fields ? ep.request_body.fields : [])}
+              </div>
+              <div>
+                <h3>响应</h3>
+                ${renderResponses(ep.responses || [])}
+              </div>
+              <div>
+                <h3>请求示例</h3>
+                <pre class="code">${highlightJSON(ep.example && ep.example.request ? ep.example.request : '') || '无'}</pre>
+              </div>
+              <div>
+                <h3>响应示例</h3>
+                <pre class="code">${highlightJSON(ep.example && ep.example.response ? ep.example.response : '') || '无'}</pre>
+              </div>
+            </div>
+          `;
+        }).join('');
+        return `
+          <div class="endpoint-group">
+            <h4>路径前缀 ${htmlEscape(prefix)}</h4>
+            ${items}
+          </div>
+        `;
+      }).join('');
+    };
+
+    const renderSessionList = (sessions, activeId) => {
+      sessionListEl.innerHTML = sessions.map((s) => {
+        const isActive = s.id === activeId;
+        return `
+          <a class="session-item ${isActive ? 'active' : ''}" href="/session/${s.id}" data-id="${s.id}">
+            <div class="session-top">
+              <span>${htmlEscape(s.id)}</span>
+              <span class="badge ${statusClass(s.status)}">${htmlEscape(s.status || '')}</span>
+            </div>
+            <div class="session-title">${htmlEscape(s.scenario || '未命名场景')}</div>
+            <div class="session-top">
+              <span>${htmlEscape(s.host || '')}</span>
+              <span>${s.log_count || 0} 条</span>
+            </div>
+          </a>
+        `;
+      }).join('');
+    };
+
+    const renderDetail = (session, logs, doc) => {
+      detailPanel.style.display = 'block';
+      overviewContent.style.display = 'none';
+      const createdAt = session.created_at ? new Date(session.created_at).toLocaleString() : '';
+      const updatedAt = session.updated_at ? new Date(session.updated_at).toLocaleString() : '';
+      detailPanel.innerHTML = `
+        <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;">
+          <div>
+            <h1>${htmlEscape(session.scenario || '未命名场景')}</h1>
+            <div class="meta">
+              <span>会话 ID: ${htmlEscape(session.id)}</span>
+              <span>来源: ${htmlEscape(session.source || '')}</span>
+              <span>Host: ${htmlEscape(session.host || '')}</span>
+              <span class="status"><span class="badge ${statusClass(session.status)}">${htmlEscape(session.status || '')}</span></span>
+            </div>
+            <div class="meta">
+              <span>创建时间: ${createdAt}</span>
+              <span>更新时间: ${updatedAt}</span>
+              <span>日志数: ${session.log_count || 0}</span>
+            </div>
+          </div>
+          <div class="actions">
+            <button class="btn" id="generateBtn">生成文档</button>
+            <button class="btn secondary" id="reloadBtn">重新加载</button>
+          </div>
+        </div>
+        <div style="margin-top:16px;">
+          <h3>最近请求</h3>
+          <div class="logs">
+            ${(logs || []).slice(0, 6).map((log) => `
+              <div class="log-card">
+                <div class="endpoint-header">
+                  <span class="method ${methodClass(log.method)}">${htmlEscape(log.method || '')}</span>
+                  <span class="badge">${log.status_code || ''}</span>
+                </div>
+                <div class="log-path">${htmlEscape(log.path || '')}</div>
+                <div class="note">${log.latency_ms || 0} ms</div>
+              </div>
+            `).join('') || '<div class="note">暂无日志</div>'}
+          </div>
+        </div>
+        <div style="margin-top:20px;">
+          <h3>接口文档</h3>
+          ${doc ? renderEndpoints(doc) : '<div class="note">尚未生成文档，请点击“生成文档”。</div>'}
+        </div>
+      `;
+
+      document.getElementById('generateBtn').addEventListener('click', async () => {
+        await generateDoc(session.id);
+      });
+      document.getElementById('reloadBtn').addEventListener('click', async () => {
+        await loadSession(session.id, true);
+      });
+    };
+
+    const loadSessions = async (activeId = '') => {
+      const res = await fetch('/api/sessions');
+      if (!res.ok) return;
+      const sessions = await res.json();
+      sessionsCache = sessions;
+      const keyword = (searchInput.value || '').toLowerCase();
+      const filtered = keyword
+        ? sessions.filter((s) => `${s.scenario} ${s.host} ${s.id}`.toLowerCase().includes(keyword))
+        : sessions;
+      renderSessionList(filtered, activeId);
+    };
+
+    const loadSession = async (id, preserve) => {
+      if (!id) {
+        detailPanel.style.display = 'none';
+        overviewContent.style.display = 'block';
+        overviewContent.textContent = '请选择一个会话开始查看。';
+        return;
+      }
+      const [detailRes, docRes] = await Promise.all([
+        fetch(`/api/sessions/${id}`),
+        fetch(`/api/sessions/${id}/doc`),
+      ]);
+
+      if (!detailRes.ok) {
+        overviewContent.textContent = '会话不存在或已被删除。';
+        detailPanel.style.display = 'none';
+        return;
+      }
+
+      const detail = await detailRes.json();
+      const doc = docRes.ok ? await docRes.json() : null;
+      renderDetail(detail.session, detail.logs || [], doc);
+      await loadSessions(id);
+      if (!preserve) {
+        history.pushState({ id }, '', `/session/${id}`);
+      }
+    };
+
+    const generateDoc = async (id) => {
+      const btn = document.getElementById('generateBtn');
+      if (btn) {
+        btn.disabled = true;
+        btn.textContent = '生成中...';
+      }
+      try {
+        const res = await fetch('/api/generate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ session_id: id }),
+        });
+        if (res.ok) {
+          await loadSession(id, true);
+        } else {
+          alert('生成失败，请检查日志。');
+        }
+      } finally {
+        if (btn) {
+          btn.disabled = false;
+          btn.textContent = '生成文档';
+        }
+      }
+    };
+
+    const init = async () => {
+      await loadSessions();
+      const startId = initialSession || (location.pathname.startsWith('/session/') ? location.pathname.split('/')[2] : '');
+      if (startId) {
+        await loadSession(startId, true);
+      }
+    };
+
+    sessionListEl.addEventListener('click', (event) => {
+      const link = event.target.closest('a[data-id]');
+      if (!link) return;
+      event.preventDefault();
+      loadSession(link.dataset.id);
+    });
+
+    window.addEventListener('popstate', (event) => {
+      const id = (event.state && event.state.id) || (location.pathname.startsWith('/session/') ? location.pathname.split('/')[2] : '');
+      loadSession(id, true);
+    });
+
+    searchInput.addEventListener('input', () => loadSessions(initialSession));
+    refreshBtn.addEventListener('click', () => loadSessions(initialSession));
+
+    init();
+  </script>
+</body>
+</html>

@@ -1,22 +1,19 @@
 package main
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
 	"os"
 	"path/filepath"
 	"text/tabwriter"
-	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/yourorg/apidoc/internal/config"
 	"github.com/yourorg/apidoc/internal/generator"
 	"github.com/yourorg/apidoc/internal/har"
+	"github.com/yourorg/apidoc/internal/server"
 	"github.com/yourorg/apidoc/internal/store"
-	"github.com/yourorg/apidoc/pkg/types"
 )
 
 const defaultConfigContent = `llm:
@@ -298,142 +295,17 @@ func newServeCmd(cfgPath *string) *cobra.Command {
 				cfg.Server.Port = port
 			}
 
-			mux := http.NewServeMux()
-
-			// Static file server for output docs
-			outputDir := cfg.Output.Dir
-			mux.Handle("/docs/", http.StripPrefix("/docs/", http.FileServer(http.Dir(outputDir))))
-
-			// API: list sessions
-			mux.HandleFunc("/api/sessions", func(w http.ResponseWriter, r *http.Request) {
-				if r.Method != http.MethodGet {
-					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-					return
-				}
-				sessions, err := s.ListSessions()
-				if err != nil {
-					http.Error(w, err.Error(), http.StatusInternalServerError)
-					return
-				}
-				w.Header().Set("Content-Type", "application/json")
-				_ = json.NewEncoder(w).Encode(sessions)
-			})
-
-			// API: receive traffic from extension
-			mux.HandleFunc("/api/traffic", func(w http.ResponseWriter, r *http.Request) {
-				setCORS(w, cfg.Server.CORSExtensionID)
-				if r.Method == http.MethodOptions {
-					w.WriteHeader(http.StatusNoContent)
-					return
-				}
-				if r.Method != http.MethodPost {
-					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-					return
-				}
-				var req struct {
-					Scenario string `json:"scenario"`
-					Logs     []struct {
-						Method              string              `json:"method"`
-						URL                 string              `json:"url"`
-						Host                string              `json:"host"`
-						Path                string              `json:"path"`
-						QueryParams         map[string][]string `json:"query_params"`
-						RequestHeaders      map[string]string   `json:"request_headers"`
-						RequestBody         string              `json:"request_body"`
-						ContentType         string              `json:"content_type"`
-						StatusCode          int                 `json:"status_code"`
-						ResponseHeaders     map[string]string   `json:"response_headers"`
-						ResponseBody        string              `json:"response_body"`
-						ResponseContentType string              `json:"response_content_type"`
-						LatencyMs           int64               `json:"latency_ms"`
-					} `json:"logs"`
-				}
-				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-					http.Error(w, "invalid json: "+err.Error(), http.StatusBadRequest)
-					return
-				}
-
-				// Convert to TrafficLog
-				var logs []types.TrafficLog
-				for i, l := range req.Logs {
-					logs = append(logs, types.TrafficLog{
-						Seq:                 i + 1,
-						Method:              l.Method,
-						Host:                l.Host,
-						Path:                l.Path,
-						QueryParams:         l.QueryParams,
-						RequestHeaders:      l.RequestHeaders,
-						RequestBody:         l.RequestBody,
-						ContentType:         l.ContentType,
-						StatusCode:          l.StatusCode,
-						ResponseHeaders:     l.ResponseHeaders,
-						ResponseBody:        l.ResponseBody,
-						ResponseContentType: l.ResponseContentType,
-						LatencyMs:           l.LatencyMs,
-						Timestamp:           time.Now(),
-					})
-				}
-
-				host := "unknown"
-				if len(req.Logs) > 0 && req.Logs[0].Host != "" {
-					host = req.Logs[0].Host
-				}
-				sess, err := s.CreateSession("extension", req.Scenario, host)
-				if err != nil {
-					http.Error(w, err.Error(), http.StatusInternalServerError)
-					return
-				}
-				if err := s.SaveLogs(sess.ID, logs); err != nil {
-					http.Error(w, err.Error(), http.StatusInternalServerError)
-					return
-				}
-
-				w.Header().Set("Content-Type", "application/json")
-				_ = json.NewEncoder(w).Encode(map[string]string{"session_id": sess.ID, "status": "imported"})
-			})
-
-			// API: generate docs for session
-			mux.HandleFunc("/api/generate", func(w http.ResponseWriter, r *http.Request) {
-				setCORS(w, cfg.Server.CORSExtensionID)
-				if r.Method == http.MethodOptions {
-					w.WriteHeader(http.StatusNoContent)
-					return
-				}
-				if r.Method != http.MethodPost {
-					http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-					return
-				}
-				var req struct {
-					SessionID string `json:"session_id"`
-				}
-				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-					http.Error(w, "invalid json", http.StatusBadRequest)
-					return
-				}
-				sess, err := s.GetSession(req.SessionID)
-				if err != nil {
-					http.Error(w, "session not found", http.StatusNotFound)
-					return
-				}
-				logs, err := s.GetLogs(sess.ID)
-				if err != nil {
-					http.Error(w, err.Error(), http.StatusInternalServerError)
-					return
-				}
-				doc, err := generator.Generate(sess, logs, cfg.LLM, s, nil, false, false)
-				if err != nil {
-					http.Error(w, "generate failed: "+err.Error(), http.StatusInternalServerError)
-					return
-				}
-				w.Header().Set("Content-Type", "application/json")
-				_ = json.NewEncoder(w).Encode(doc)
-			})
+			srv, err := server.New(cfg, s)
+			if err != nil {
+				return err
+			}
 
 			addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
 			fmt.Fprintf(cmd.OutOrStdout(), "serving on http://%s\n", addr)
+			fmt.Fprintf(cmd.OutOrStdout(), "  ui:      http://%s/\n", addr)
 			fmt.Fprintf(cmd.OutOrStdout(), "  docs:    http://%s/docs/\n", addr)
 			fmt.Fprintf(cmd.OutOrStdout(), "  api:     http://%s/api/sessions\n", addr)
-			return http.ListenAndServe(addr, mux)
+			return srv.ListenAndServe(addr)
 		},
 	}
 
@@ -544,16 +416,6 @@ func newDeleteCmd(cfgPath *string) *cobra.Command {
 	cmd.Flags().StringVar(&session, "session", "", "session id")
 	_ = cmd.MarkFlagRequired("session")
 	return cmd
-}
-
-func setCORS(w http.ResponseWriter, extensionID string) {
-	origin := "*"
-	if extensionID != "" {
-		origin = "chrome-extension://" + extensionID
-	}
-	w.Header().Set("Access-Control-Allow-Origin", origin)
-	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 }
 
 func truncate(s string, max int) string {
